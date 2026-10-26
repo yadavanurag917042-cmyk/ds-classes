@@ -1,0 +1,8 @@
+{
+  "appId": "com.dsclasses.app",
+  "appName": "DS CLASSES",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

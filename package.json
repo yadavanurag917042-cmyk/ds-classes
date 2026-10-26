@@ -1,0 +1,21 @@
+{
+  "name": "ds-classes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DS CLASSES Capacitor Android wrapper",
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "android:add": "npm run build && cap add android",
+    "android:sync": "npm run build && cap sync android",
+    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  }
+}

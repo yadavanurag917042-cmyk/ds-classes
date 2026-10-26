@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="hi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080d18" />
+    <meta
+      name="description"
+      content="DS CLASSES - Gulab Sir ke saath padhai ka naya digital andaaz."
+    />
+    <title>DS CLASSES | Gulab Sir</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js" defer></script>
+    <script src="supabase/config.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main id="app" class="app-shell">
+      <section class="welcome-screen" id="welcome-screen">
+        <div class="welcome-glow welcome-glow-one"></div>
+        <div class="welcome-glow welcome-glow-two"></div>
+        <div class="welcome-content">
+          <div class="brand-mark" aria-hidden="true">DS</div>
+          <p class="eyebrow">PADHAI, AB AUR SMART</p>
+          <h1>DS <span>CLASSES</span></h1>
+          <p class="teacher-name">Gulab Sir</p>
+          <p class="welcome-copy">
+            Aapki class, aapki padhai — sab kuchh ek hi jagah.
+          </p>
+
+          <section class="login-card" id="login-form">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">STUDENT LOGIN</p>
+                <h2>Apni padhai jaari rakhein</h2>
+              </div>
+              <span class="lock-icon" aria-hidden="true">↗</span>
+            </div>
+            <div id="registration-fields" class="registration-fields hidden">
+              <label for="student-name">Aapka poora naam</label>
+              <input id="student-name" name="name" type="text" placeholder="Jaise: Rahul Kumar" autocomplete="name" />
+              <label for="student-phone">Phone number</label>
+              <input id="student-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" minlength="10" maxlength="16" />
+              <label for="student-address">Address</label>
+              <textarea id="student-address" name="address" placeholder="Apna address likhein" autocomplete="street-address"></textarea>
+            </div>
+            <button class="button button-primary button-full" id="student-google-login" type="button">
+              Google se continue karein <span aria-hidden="true">→</span>
+            </button>
+            <p class="form-note" id="login-message" aria-live="polite">
+              Student account banane ya login karne ke liye apna Google account use karein.
+            </p>
+            <button class="text-button" id="register-toggle" type="button">Naye student? Account banayein</button>
+          </section>
+
+          <section class="login-card hidden" id="admin-login-form">
+            <div class="card-heading">
+              <div><p class="eyebrow">AUTHORIZED ADMIN ONLY</p><h2>Admin Google Sign-In</h2></div>
+              <span class="lock-icon" aria-hidden="true">↗</span>
+            </div>
+            <button class="button button-primary button-full" id="admin-google-login" type="button">Admin Google account se continue karein →</button>
+            <p class="form-note" id="admin-login-message" aria-live="polite">Sirf Supabase mein approved admin role wala Google account login kar sakta hai.</p>
+            <button class="text-button" id="admin-login-back" type="button">Wapas student login par</button>
+          </section>
+
+          <button class="admin-link" id="admin-login-button" type="button">
+            Gulab Sir / Admin login
+          </button>
+          <nav class="legal-links" aria-label="Legal information">
+            <a href="privacy.html">Privacy Policy</a>
+            <a href="terms.html">Terms of Service</a>
+          </nav>
+        </div>
+        <p class="welcome-footer">SEEKHO. BADHO. AAGE NIKLO.</p>
+      </section>
+
+      <section class="dashboard hidden" id="dashboard">
+        <aside class="sidebar">
+          <a class="sidebar-brand" href="#" data-view="home" aria-label="DS Classes home">
+            <span class="mini-brand">DS</span>
+            <span><strong>DS CLASSES</strong><small>Gulab Sir</small></span>
+          </a>
+          <p class="nav-label">MENU</p>
+          <nav class="side-nav" aria-label="Main navigation">
+            <button class="nav-item active" data-view="home"><span>⌂</span> Home</button>
+            <button class="nav-item" data-view="classes"><span>▶</span> Classes</button>
+            <button class="nav-item" data-view="notes"><span>▤</span> Notes</button>
+            <button class="nav-item" data-view="community"><span>◎</span> Community</button>
+            <button class="nav-item" data-view="profile"><span>◉</span> Profile</button>
+          </nav>
+          <div class="sidebar-bottom">
+            <div class="sidebar-help">
+              <span class="help-icon">✦</span>
+              <strong>Seekhne ke liye ready?</strong>
+              <p>Apni class ke saath aage badhein.</p>
+            </div>
+            <button class="logout-button" id="back-to-welcome" type="button">
+              <span>↪</span> Welcome screen
+            </button>
+          </div>
+        </aside>
+
+        <div class="dashboard-main">
+          <header class="topbar">
+            <button class="mobile-brand" data-view="home" type="button">
+              <span class="mini-brand">DS</span> DS CLASSES
+            </button>
+            <div class="topbar-spacer"></div>
+            <span class="connection-badge" id="connection-badge"><span></span> CONNECTING</span>
+            <button class="notice-button" data-view="home" type="button" aria-label="Notices">
+              ♧ <span class="notification-dot"></span>
+            </button>
+            <button class="avatar-button" data-view="profile" type="button" aria-label="Profile">
+              S
+            </button>
+          </header>
+          <div class="content-wrap">
+            <div id="page-content"></div>
+          </div>
+        </div>
+
+        <nav class="mobile-nav" aria-label="Mobile navigation">
+          <button class="mobile-nav-item active" data-view="home"><span>⌂</span>Home</button>
+          <button class="mobile-nav-item" data-view="classes"><span>▶</span>Classes</button>
+          <button class="mobile-nav-item" data-view="notes"><span>▤</span>Notes</button>
+          <button class="mobile-nav-item" data-view="community"><span>◎</span>Community</button>
+          <button class="mobile-nav-item" data-view="profile"><span>◉</span>Profile</button>
+        </nav>
+      </section>
+    </main>
+  </body>
+</html>
