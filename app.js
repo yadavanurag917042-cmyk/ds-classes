@@ -16,7 +16,11 @@ const backendConfigured = Boolean(
   window.supabase?.createClient,
 );
 const supabase = backendConfigured
-  ? window.supabase.createClient(config.url, config.anonKey)
+  ? window.supabase.createClient(config.url, config.anonKey, {
+      auth: {
+        flowType: "pkce",
+      },
+    })
   : null;
 
 let currentView = "home";
@@ -27,14 +31,17 @@ let registrationMode = false;
 let adminMode = false;
 let liveChatChannel = null;
 let subscribedLiveSessionIds = "";
+let inboxChannel = null;
+let currentInboxThreadId = null;
 let nativePluginsPromise = null;
+let adminStudentFunctionsAvailable = true;
+const supportedViews = new Set(["home", "notices", "classes", "notes", "community", "inbox", "profile", "admin"]);
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[character]);
 }
-
 function message(element, text, isError = false) {
   element.textContent = text;
   element.classList.toggle("message-warning", isError);
@@ -60,6 +67,10 @@ function emptyState(text) {
   return `<div class="empty-state">${escapeHtml(text)}</div>`;
 }
 
+function rpcUnavailable(error) {
+  return error?.code === "PGRST202";
+}
+
 function noticeCard(notice) {
   return `<article class="notice-card"><span class="notice-icon" aria-hidden="true">♧</span><div><h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.body)}</p><small>${formatDate(notice.created_at)} · Gulab Sir</small></div></article>`;
 }
@@ -77,7 +88,7 @@ function renderLiveCard(session, chatMessages = []) {
 }
 
 function renderHome(profile, liveSessions, notices, noteCount) {
-  return `${heading("DS CLASSES · GULAB SIR", `Namaste, ${profile.full_name}`, "Aapki class, notes aur notices — ek hi jagah.")}<section class="stats-grid"><article class="stat-card"><div class="stat-top">Aapka batch <span class="stat-icon">▦</span></div><strong class="stat-value">${escapeHtml(profile.batch?.name || "Batch assign nahi")}</strong></article><article class="stat-card"><div class="stat-top">Study notes <span class="stat-icon">▤</span></div><strong class="stat-value">${noteCount} files</strong></article><article class="stat-card"><div class="stat-top">Notices <span class="stat-icon">♧</span></div><strong class="stat-value">${notices.length}</strong></article></section><div class="section-row"><h3>Quick access</h3></div><section class="quick-grid"><button class="quick-card" data-view="classes" type="button"><span class="quick-icon">▶</span><strong>Live classes</strong><small>Classes aur recordings</small></button><button class="quick-card" data-view="notes" type="button"><span class="quick-icon">▤</span><strong>Study notes</strong><small>Apna study material</small></button><button class="quick-card" data-view="community" type="button"><span class="quick-icon">◎</span><strong>Community</strong><small>Saath milkar seekhein</small></button></section><div class="section-row"><h3>Live classes aur recordings</h3></div>${liveSessions.length ? liveSessions.map(renderLiveCard).join("") : emptyState("Abhi aapke batch ke liye koi class schedule nahi hai.")}<div class="section-row"><h3>Latest notice</h3><button data-view="notices" type="button">Sabhi notices →</button></div>${notices[0] ? noticeCard(notices[0]) : emptyState("Abhi koi notice nahi hai.")}`;
+  return `${heading("DS CLASSES · GULAB SIR", `Namaste, ${profile.full_name}`, "Aapki class, notes aur notices — ek hi jagah.")}<section class="stats-grid"><article class="stat-card"><div class="stat-top">Aapka batch <span class="stat-icon">▦</span></div><strong class="stat-value">${escapeHtml(profile.batch?.name || "Batch assign nahi")}</strong></article><article class="stat-card"><div class="stat-top">Study notes <span class="stat-icon">▤</span></div><strong class="stat-value">${noteCount} files</strong></article><article class="stat-card"><div class="stat-top">Notices <span class="stat-icon">♧</span></div><strong class="stat-value">${notices.length}</strong></article></section><div class="section-row"><h3>Quick access</h3></div><section class="quick-grid"><button class="quick-card" data-view="classes" type="button"><span class="quick-icon">▶</span><strong>Live classes</strong><small>Classes aur recordings</small></button><button class="quick-card" data-view="notes" type="button"><span class="quick-icon">▤</span><strong>Study notes</strong><small>Apna study material</small></button><button class="quick-card" data-view="community" type="button"><span class="quick-icon">◎</span><strong>Community</strong><small>Saath milkar seekhein</small></button></section><div class="section-row"><h3>Live classes aur recordings</h3></div>${liveSessions.length ? liveSessions.map((session) => renderLiveCard(session)).join("") : emptyState("Abhi aapke batch ke liye koi class schedule nahi hai.")}<div class="section-row"><h3>Latest notice</h3><button data-view="notices" type="button">Sabhi notices →</button></div>${notices[0] ? noticeCard(notices[0]) : emptyState("Abhi koi notice nahi hai.")}`;
 }
 
 function renderNotesList(rows) {
@@ -85,32 +96,64 @@ function renderNotesList(rows) {
   return `<div class="notes-list">${rows.map((note) => `<article class="note-card" data-action="open-note" data-id="${escapeHtml(note.id)}" tabindex="0" role="button"><span class="note-icon">▤</span><div class="note-info"><h4>${escapeHtml(note.title)}</h4><p>${escapeHtml(note.subject)}</p><small>${formatDate(note.created_at)}</small></div><span class="download-icon">↓</span></article>`).join("")}</div>`;
 }
 
-function renderPosts(rows) {
+function renderPosts(rows, commentsEnabled = true) {
   if (!rows.length) return emptyState("Abhi community mein koi post nahi hai. Pehli post aap karein!");
-  return `<div class="posts-list">${rows.map((post) => `<article class="post-card"><div class="post-head"><span class="user-avatar">${post.avatar_url ? `<img src="${escapeHtml(post.avatar_url)}" alt="">` : escapeHtml(initials(post.author_name))}</span><div><strong>${escapeHtml(post.author_name)}</strong><small>${formatDate(post.created_at)}</small></div></div>${post.body ? `<p class="post-body">${escapeHtml(post.body)}</p>` : ""}${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="Community post photo" loading="lazy">` : ""}<div class="post-actions"><span>Community post</span></div></article>`).join("")}</div>`;
+  return `<div class="posts-list">${rows.map((post) => `<article class="post-card"><div class="post-head"><span class="user-avatar">${post.avatar_url ? `<img src="${escapeHtml(post.avatar_url)}" alt="">` : escapeHtml(initials(post.author_name))}</span><div><strong>${escapeHtml(post.author_name)}</strong><small>${formatDate(post.created_at)}</small></div></div>${post.body ? `<p class="post-body">${escapeHtml(post.body)}</p>` : ""}${post.image_url ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="Community post photo" loading="lazy">` : ""}<div class="community-comments">${(post.comments || []).map((comment) => `<p><strong>${escapeHtml(comment.author_name)}:</strong> ${escapeHtml(comment.body)} <small>${formatDate(comment.created_at)}</small></p>`).join("")}${commentsEnabled ? `<form class="community-comment-form" data-post-id="${escapeHtml(post.id)}"><input name="body" maxlength="1000" placeholder="Comment likhein..." aria-label="Comment" required><button class="button button-secondary button-small" type="submit">Reply</button></form>` : ""}</div></article>`).join("")}</div>`;
 }
 
-function renderCommunity(rows) {
-  return `${heading("SAATH MILKAR SEEKHEIN", "Community", "Apne batch mein text ya photo share karein. Personal messages nahi hain.")}<form class="community-form" id="community-form"><div class="composer-top"><span class="user-avatar">${escapeHtml(initials(currentProfile.full_name))}</span><div><strong>${escapeHtml(currentProfile.full_name)}</strong><small>${escapeHtml(currentProfile.batch?.name || "Batch assign hone ka intezar")}</small></div></div><label class="field-label" for="post-text">Aap kya share karna chahenge?</label><textarea id="post-text" name="post" maxlength="500" placeholder="Koi sawal, padhai ka tip ya progress share karein..."></textarea><div class="composer-bottom"><div class="composer-tools"><label class="photo-upload" for="post-image">▧ Photo jodein</label><input id="post-image" name="image" type="file" accept="image/jpeg,image/png,image/webp"><span class="community-hint" id="post-image-name">Text ya photo · max 8 MB</span></div><button class="button button-primary button-small" type="submit" ${currentProfile.batch_id ? "" : "disabled"}>Post karein ↗</button></div></form>${rows}`;
+function renderCommunity(rows, batches = [], statusMessage = "") {
+  const adminBatchPicker = adminMode
+    ? `<label class="field-label" for="post-batch">Post kis batch ko dikhani hai?</label><select id="post-batch" name="batch_id" required>${batchOptions(batches, false)}</select>`
+    : "";
+  return `${heading("SAATH MILKAR SEEKHEIN", "Community", "Apne batch ke students aur admin ke saath posts aur comments share karein.")}${statusMessage ? `<p class="community-hint" role="status">${escapeHtml(statusMessage)}</p>` : ""}<form class="community-form" id="community-form"><div class="composer-top"><span class="user-avatar">${escapeHtml(initials(currentProfile.full_name))}</span><div><strong>${escapeHtml(currentProfile.full_name)}</strong><small>${escapeHtml(currentProfile.batch?.name || "Batch assign hone ka intezar")}</small></div></div>${adminBatchPicker}<label class="field-label" for="post-text">Aap kya share karna chahenge?</label><textarea id="post-text" name="post" maxlength="500" placeholder="Koi sawal, padhai ka tip ya progress share karein..."></textarea><div class="composer-bottom"><div class="composer-tools"><label class="photo-upload" for="post-image">▧ Photo jodein</label><input id="post-image" name="image" type="file" accept="image/jpeg,image/png,image/webp"><span class="community-hint" id="post-image-name">Text ya photo · max 8 MB</span></div><button class="button button-primary button-small" type="submit" ${currentProfile.batch_id || adminMode ? "" : "disabled"}>Post karein ↗</button></div></form>${rows}`;
 }
 
 function renderProfile(profile, avatarUrl) {
-  return `${heading("AAPKA ACCOUNT", "Student profile", "Aapki details private hain; doosre students ko sirf community mein naam aur photo dikhte hain.")}<article class="profile-card"><div class="profile-avatar">${avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="Aapki profile photo">` : escapeHtml(initials(profile.full_name))}</div><div class="profile-details"><h3>${escapeHtml(profile.full_name)}</h3><p>DS CLASSES student</p><span class="profile-tag">${escapeHtml(profile.batch?.name || "Batch abhi assign nahi")}</span><form class="avatar-form" id="avatar-form"><label class="photo-upload" for="avatar-file">Profile photo badlein</label><input id="avatar-file" name="file" type="file" accept="image/jpeg,image/png,image/webp" required><button class="button button-secondary button-small" type="submit">Photo save karein</button></form></div><div class="profile-fields"><div class="profile-field"><small>Email</small><strong>${escapeHtml(profile.email || "Email linked nahi hai")}</strong></div><div class="profile-field"><small>Phone number</small><strong>${escapeHtml(profile.phone || "—")}</strong></div><div class="profile-field"><small>Address</small><strong>${escapeHtml(profile.address || "—")}</strong></div></div></article><div class="section-row"><h3>Privacy</h3></div><article class="notice-card"><span class="notice-icon">◉</span><div><h4>Student privacy</h4><p>Community mein naam aur profile photo hi share hote hain. Phone, email aur address doosre students ko nahi dikhte. Personal messaging available nahi hai.</p></div></article><div class="admin-actions"><button class="button button-secondary" type="button" data-action="sign-out">Logout</button></div>`;
+  const profileDescription = adminMode
+    ? "Apna admin naam aur profile photo badlein. Google login email surakshit aur read-only rahega."
+    : "Apna naam aur phone update karein; email Google account se securely linked hai.";
+  return `${heading("AAPKA ACCOUNT", "Profile", profileDescription)}<article class="profile-card"><div class="profile-avatar">${avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="Aapki profile photo">` : escapeHtml(initials(profile.full_name))}</div><div class="profile-details"><h3>${escapeHtml(profile.full_name)}</h3><p>${adminMode ? "DS CLASSES administrator" : "DS CLASSES student"}</p><span class="profile-tag">${escapeHtml(profile.batch?.name || (adminMode ? "Admin account" : "Batch abhi assign nahi"))}</span><form class="avatar-form" id="avatar-form"><label class="photo-upload" for="avatar-file">Profile picture chunein</label><input id="avatar-file" name="file" type="file" accept="image/jpeg,image/png,image/webp" aria-label="Profile picture file" required><span class="community-hint" id="avatar-file-name">JPG, PNG ya WebP · max 5 MB</span><button class="button button-secondary button-small" type="submit">Photo save karein</button></form></div><div class="profile-fields"><div class="profile-field"><small>Email</small><strong>${escapeHtml(profile.email || "Email linked nahi hai")}</strong></div><div class="profile-field"><small>Assigned batch</small><strong>${escapeHtml(profile.batch?.name || "—")}</strong></div></div></article><section class="admin-section profile-edit"><h3>${adminMode ? "Admin profile details" : "Profile details"}</h3><form id="profile-form" class="admin-form"><label>Full name<input name="full_name" value="${escapeHtml(profile.full_name)}" maxlength="120" autocomplete="name" required></label><label>Phone<input name="phone" type="tel" value="${escapeHtml(profile.phone || "")}" maxlength="40" autocomplete="tel"></label><button class="button button-primary button-small" type="submit">Naam aur phone save karein</button></form></section>${adminMode ? `<section class="admin-section"><h3>Admin tools</h3><p class="community-hint">Student app ke Home, Classes, Notes aur Community bhi aapke liye available hain.</p><button class="button button-primary" type="button" data-view="admin">Admin Dashboard kholein</button></section>` : ""}<div class="admin-actions"><button class="button button-secondary" type="button" data-action="sign-out">Logout</button></div>`;
 }
 
-function adminPanelMarkup(batches, students, liveSessions) {
-  const batchMenu = batchOptions(batches);
-  const activeSessions = liveSessions.map((session) => `<article class="notice-card"><span class="notice-icon">▶</span><div><h4>${escapeHtml(session.title)} · ${escapeHtml(session.batch?.name || "All batches")}</h4><p>${escapeHtml(session.subject)} · ${escapeHtml(session.status)} · ${formatDate(session.starts_at)}</p><div class="admin-actions">${session.status === "live" ? `<button class="button button-secondary button-small" data-action="end-live" data-id="${escapeHtml(session.id)}" type="button">Live class end karein</button>` : ""}</div>${session.status === "ended" ? `<form class="recording-form admin-form" data-session-id="${escapeHtml(session.id)}"><label>Recording HTTPS link<input name="recording_url" type="url" value="${escapeHtml(session.recording_url || "")}" placeholder="https://..." required></label><button class="button button-secondary button-small" type="submit">Recording link save karein</button></form>` : ""}</div></article>`).join("");
-  const studentRows = students.map((student) => `<tr><td>${escapeHtml(student.full_name)}</td><td>${escapeHtml(student.email || "—")}</td><td>${escapeHtml(student.phone || "—")}</td><td>${escapeHtml(student.address || "—")}</td><td><select data-action="assign-batch" data-id="${escapeHtml(student.id)}" aria-label="${escapeHtml(student.full_name)} ka batch"><option value="">Batch assign karein</option>${batches.map((batch) => `<option value="${escapeHtml(batch.id)}" ${student.batch_id === batch.id ? "selected" : ""}>${escapeHtml(batch.name)} · ${escapeHtml(batch.class_name)}</option>`).join("")}</select></td></tr>`).join("");
-  return `${heading("SECURE ADMIN PANEL", `Namaste, ${currentProfile.full_name}`, "Students, batches, notices, notes aur live class manage karein.")}<div class="admin-preview"><article class="admin-card"><small>Total students</small><strong>${students.length}</strong><p>Registered student accounts</p></article><article class="admin-card"><small>Active batches</small><strong>${batches.filter((batch) => batch.is_active).length}</strong><p>Student assignment ke liye batches</p></article><article class="admin-card"><small>Live sessions</small><strong>${liveSessions.filter((session) => session.status === "live").length}</strong><p>Abhi chal rahi classes</p></article></div>
-    <div class="admin-management">
-      <section class="admin-section"><h3>Batch banayein</h3><form class="admin-form" id="batch-form"><label>Batch ka naam<input name="name" maxlength="100" placeholder="Class 10 - 2026" required></label><label>Class<input name="class_name" maxlength="80" placeholder="Class 10" required></label><button class="button button-primary button-small">Batch save karein</button></form></section>
-      <section class="admin-section"><h3>Notice bhejein</h3><form class="admin-form" id="notice-form"><label>Batch<select name="batch_id">${batchMenu}</select></label><label>Title<input name="title" maxlength="160" required></label><label>Message<textarea name="body" maxlength="5000" required></textarea></label><button class="button button-primary button-small">Notice publish karein</button></form></section>
-      <section class="admin-section"><h3>Notes upload karein</h3><form class="admin-form" id="note-form"><label>Batch<select name="batch_id">${batchMenu}</select></label><label>Subject<input name="subject" maxlength="100" required></label><label>Notes ka naam<input name="title" maxlength="160" required></label><label>PDF file<input name="file" type="file" accept="application/pdf" required></label><button class="button button-primary button-small">PDF upload karein</button></form></section>
-      <section class="admin-section"><h3>Live class shuru karein</h3><p class="community-hint">Video room/stream apne provider par banayein aur students ke liye viewer link yahan paste karein. Secret stream keys kabhi na daalein.</p><form class="admin-form" id="live-form"><label>Batch<select name="batch_id" required>${batchOptions(batches, false)}</select></label><label>Subject<input name="subject" maxlength="100" required></label><label>Class ka naam<input name="title" maxlength="160" required></label><label>Students ka HTTPS viewer link<input name="stream_url" type="url" placeholder="https://..." required></label><label>Recording ka HTTPS link (baad mein add kar sakte hain)<input name="recording_url" type="url" placeholder="https://..."></label><button class="button button-primary button-small">Live class publish karein</button></form></section>
-    </div>
-    <div class="section-row"><h3>Live sessions</h3></div>${activeSessions || emptyState("Abhi koi live session nahi hai.")}
-    <div class="section-row"><h3>Students aur batch assignment</h3></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Naam</th><th>Email</th><th>Phone</th><th>Address</th><th>Batch</th></tr></thead><tbody>${studentRows || `<tr><td colspan="5">Abhi koi student registered nahi hai.</td></tr>`}</tbody></table></div>`;
+function adminPanelMarkup(batches, students, liveSessions, options = {}) {
+  const activeBatches = batches.filter((batch) => batch.is_active);
+  const batchMenu = batchOptions(activeBatches, false);
+  const batchRows = batches.map((batch) => `<form class="batch-edit-form batch-control-row" data-id="${escapeHtml(batch.id)}"><input name="name" value="${escapeHtml(batch.name)}" maxlength="100" aria-label="Batch name" required><input name="class_name" value="${escapeHtml(batch.class_name)}" maxlength="80" aria-label="Class name" required><span>${batch.is_active ? "Active" : "Archived"}</span><button class="button button-secondary button-small" type="submit" ${batch.is_active ? "" : "disabled"}>Save</button>${batch.is_active ? `<button class="button button-danger button-small" data-action="archive-batch" data-id="${escapeHtml(batch.id)}" type="button">Delete</button>` : ""}</form>`).join("");
+  const studentRows = students.map((student) => {
+    const verification = student.email_verified === null
+      ? "Run admin migration"
+      : student.email_verified ? "Verified" : "Not verified";
+    const accountState = student.is_active === null
+      ? "Migration required"
+      : student.is_active ? "Active" : "Inactive";
+    const accountActions = options.adminFunctionsAvailable
+      ? `<button class="button button-secondary button-small" data-action="toggle-student" data-id="${escapeHtml(student.id)}" data-active="${student.is_active}" data-name="${escapeHtml(student.full_name)}" type="button">${student.is_active ? "Deactivate" : "Reactivate"}</button><button class="button button-danger button-small" data-action="delete-student" data-id="${escapeHtml(student.id)}" data-name="${escapeHtml(student.full_name)}" type="button">Delete</button>`
+      : `<button class="button button-secondary button-small" type="button" disabled title="Supabase schema migration pehle apply karein">Account actions unavailable</button>`;
+    return `<tr data-student-row data-search="${escapeHtml(`${student.full_name} ${student.email || ""} ${student.phone || ""}`.toLowerCase())}"><td><form class="student-edit-form" data-id="${escapeHtml(student.id)}"><label class="sr-only" for="student-name-${escapeHtml(student.id)}">Student name</label><input id="student-name-${escapeHtml(student.id)}" name="full_name" value="${escapeHtml(student.full_name)}" maxlength="120" required><label class="sr-only" for="student-phone-${escapeHtml(student.id)}">Phone</label><input id="student-phone-${escapeHtml(student.id)}" name="phone" value="${escapeHtml(student.phone || "")}" maxlength="40"><label class="sr-only" for="student-address-${escapeHtml(student.id)}">Address</label><input id="student-address-${escapeHtml(student.id)}" name="address" value="${escapeHtml(student.address || "")}" maxlength="500"><label class="sr-only" for="student-batch-${escapeHtml(student.id)}">Batch</label><select id="student-batch-${escapeHtml(student.id)}" name="batch_id"><option value="">No batch</option>${activeBatches.map((batch) => `<option value="${escapeHtml(batch.id)}" ${student.batch_id === batch.id ? "selected" : ""}>${escapeHtml(batch.name)} · ${escapeHtml(batch.class_name)}</option>`).join("")}</select><button class="button button-secondary button-small" type="submit">Save</button></form></td><td>${escapeHtml(student.email || "—")}<small class="verification-badge">${verification}</small></td><td>${formatDate(student.created_at)}</td><td><span class="profile-tag">${accountState}</span><div class="admin-actions">${accountActions}</div></td></tr>`;
+  }).join("");
+  const sessionRows = liveSessions.map((session) => `<article class="notice-card"><span class="notice-icon">▶</span><div><h4>${escapeHtml(session.title)} · ${escapeHtml(session.batch?.name || "Batch unavailable")}</h4><p>${escapeHtml(session.subject)} · ${escapeHtml(session.status)} · ${formatDate(session.starts_at)}</p><form class="session-links-form admin-form" data-session-id="${escapeHtml(session.id)}"><label>Class HTTPS link<input name="stream_url" type="url" value="${escapeHtml(session.stream_url || "")}" placeholder="https://..."></label><label>Recording HTTPS link<input name="recording_url" type="url" value="${escapeHtml(session.recording_url || "")}" placeholder="https://..."></label><button class="button button-secondary button-small" type="submit">Links save karein</button></form><div class="admin-actions">${session.status === "live" ? `<button class="button button-danger button-small" data-action="end-live" data-id="${escapeHtml(session.id)}" type="button">Live class stop karein</button>` : ""}</div></div></article>`).join("");
+  const migrationNotice = options.migrationRequired
+    ? `<div class="empty-state" role="status">Admin features ka Supabase SQL migration abhi apply nahi hai. Batch, notice, notes, live-class aur profile-based assignment manage kiye ja sakte hain; verified email aur account deactivate/delete ke liye Supabase SQL Editor mein supabase/schema.sql chalayein.</div>`
+    : "";
+  return `${heading("ADMIN DASHBOARD", `Namaste, ${currentProfile.full_name}`, "Batch Control aur Student Details ko manage karein.")}${migrationNotice}<div class="admin-preview"><article class="admin-card"><small>Registered students</small><strong>${students.length}</strong></article><article class="admin-card"><small>Active batches</small><strong>${activeBatches.length}</strong></article><article class="admin-card"><small>Live classes</small><strong>${liveSessions.filter((session) => session.status === "live").length}</strong></article></div><section class="admin-section admin-control-box"><h3>Batch Control</h3><div class="admin-management"><form class="admin-form" id="batch-form"><label>Batch name<input name="name" maxlength="100" placeholder="Class 10 - 2026" required></label><label>Class<input name="class_name" maxlength="80" placeholder="Class 10" required></label><button class="button button-primary button-small" type="submit">Batch create karein</button></form><form class="admin-form" id="notice-form"><label>Batch<select name="batch_id" required>${batchMenu}</select></label><label>Notice title<input name="title" maxlength="160" required></label><label>Notice message<textarea name="body" maxlength="5000" required></textarea></label><button class="button button-primary button-small" type="submit">Notice publish karein</button></form><form class="admin-form" id="note-form"><label>Batch<select name="batch_id" required>${batchMenu}</select></label><label>Subject<input name="subject" maxlength="100" required></label><label>Notes name<input name="title" maxlength="160" required></label><label>PDF file<input name="file" type="file" accept="application/pdf" required></label><button class="button button-primary button-small" type="submit">PDF upload karein</button></form><form class="admin-form" id="live-form"><label>Batch<select name="batch_id" required>${batchOptions(activeBatches, false)}</select></label><label>Subject<input name="subject" maxlength="100" required></label><label>Class name<input name="title" maxlength="160" required></label><label>Students' HTTPS viewer link<input name="stream_url" type="url" placeholder="https://..." required></label><label>Recording link<input name="recording_url" type="url" placeholder="https://..."></label><button class="button button-primary button-small" type="submit">Live class start karein</button></form></div><div class="admin-section"><h4>Batch create/edit/delete</h4><div class="batch-control-list">${batchRows || emptyState("Abhi koi batch nahi hai.")}</div></div><div class="section-row"><h4>Live classes aur links</h4></div>${sessionRows || emptyState("Abhi koi live session nahi hai.")}</section><section class="admin-section student-details-box"><h3>Student Details</h3><label class="student-search-label">Search students<input id="student-search" type="search" placeholder="Name, email ya phone se search karein"></label><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Student details / batch</th><th>Verified email</th><th>Registration date</th><th>Account controls</th></tr></thead><tbody>${studentRows || `<tr><td colspan="4">Abhi koi student registered nahi hai.</td></tr>`}</tbody></table></div></section>`;
+}
+
+function renderInbox(threads, selectedThread, messages, students = []) {
+  const selectedId = selectedThread?.id || "";
+  const threadList = threads.length
+    ? threads.map((thread) => {
+      const studentName = students.find((student) => student.id === thread.student_id)?.full_name;
+      return `<button type="button" class="inbox-thread-button ${thread.id === selectedId ? "active" : ""}" data-action="select-thread" data-id="${escapeHtml(thread.id)}"><strong>${escapeHtml(studentName || thread.subject)}</strong><span>${escapeHtml(thread.subject)}</span><small>${formatDate(thread.updated_at)}</small></button>`;
+    }).join("")
+    : emptyState("Abhi koi conversation nahi hai.");
+  const newThread = !adminMode
+    ? `<form class="admin-form inbox-new-form" id="new-thread-form"><h3>Naya doubt / message</h3><label>Subject<input name="subject" maxlength="160" required></label><label>Message<textarea name="body" maxlength="5000" required></textarea></label><button class="button button-primary button-small" type="submit">Admin ko bhejein</button></form>`
+    : "";
+  const selectedStudentName = students.find((student) => student.id === selectedThread?.student_id)?.full_name;
+  const conversation = selectedThread
+    ? `<section class="inbox-conversation"><div class="section-row"><h3>${escapeHtml(selectedThread.subject)}</h3><small>${adminMode ? escapeHtml(selectedStudentName || "Student") : "DS CLASSES Admin"}</small></div><div class="inbox-message-list">${messages.map((item) => `<article class="inbox-message ${item.sender_id === currentUser.id ? "mine" : ""}"><strong>${escapeHtml(item.sender_id === currentUser.id ? "Aap" : (adminMode ? selectedStudentName || "Student" : "DS CLASSES Admin"))}</strong><p>${escapeHtml(item.body)}</p><small>${formatDate(item.created_at)}</small></article>`).join("") || emptyState("Abhi koi message nahi hai.")}</div><form class="admin-form inbox-reply-form" id="inbox-reply-form" data-thread-id="${escapeHtml(selectedThread.id)}"><label>Reply<textarea name="body" maxlength="5000" required></textarea></label><button class="button button-primary button-small" type="submit">Message bhejein</button></form></section>`
+    : emptyState(adminMode ? "Reply karne ke liye student conversation chunein." : "Conversation chunein ya admin ko naya message bhejein.");
+  return `${heading("PRIVATE STUDENT-ADMIN MESSAGES", "Inbox", "Doubts aur replies sirf aap aur DS CLASSES admin ke beech dikhte hain.")}<div class="inbox-layout"><aside class="inbox-sidebar"><h3>${adminMode ? "Student conversations" : "Aapke messages"}</h3>${threadList}${newThread}</aside>${conversation}</div>`;
 }
 
 async function getProfile(user) {
@@ -128,6 +171,25 @@ function setDashboardVisible(isVisible) {
   dashboard.classList.toggle("hidden", !isVisible);
 }
 
+async function updateInboxCount(userId) {
+  try {
+    const { count, error } = await supabase
+      .from("inbox_messages")
+      .select("id", { count: "exact", head: true })
+      .neq("sender_id", userId)
+      .is("read_at", null);
+    if (error) throw error;
+    if (currentUser?.id !== userId) return;
+    document.querySelectorAll("#desktop-inbox-count").forEach((badge) => {
+      badge.textContent = count ? String(count) : "";
+      badge.classList.toggle("hidden", !count);
+    });
+    document.querySelector("#topbar-inbox-dot").classList.toggle("hidden", !count);
+  } catch (error) {
+    console.warn("Inbox unread count could not be loaded:", error.message);
+  }
+}
+
 async function enterDashboard(user, requiredPurpose = "student") {
   if (!supabase) return;
   if (requiredPurpose === "admin" && user.app_metadata?.role !== "admin") {
@@ -137,6 +199,7 @@ async function enterDashboard(user, requiredPurpose = "student") {
   }
   currentUser = user;
   currentProfile = await getProfile(user);
+  currentInboxThreadId = null;
   const pendingProfile = sessionStorage.getItem("ds-classes.pending-student-profile");
   if (pendingProfile && requiredPurpose === "student") {
     sessionStorage.removeItem("ds-classes.pending-student-profile");
@@ -151,6 +214,7 @@ async function enterDashboard(user, requiredPurpose = "student") {
     currentProfile = await getProfile(user);
   }
   adminMode = user.app_metadata?.role === "admin";
+  adminStudentFunctionsAvailable = true;
   currentView = "home";
   setDashboardVisible(true);
   document.querySelector("#connection-badge").innerHTML = "<span></span> SUPABASE CONNECTED";
@@ -166,20 +230,51 @@ async function loadView() {
     liveChatChannel = null;
     subscribedLiveSessionIds = "";
   }
+  if (view !== "inbox" && inboxChannel) {
+    await supabase.removeChannel(inboxChannel);
+    inboxChannel = null;
+  }
+  void updateInboxCount(currentUser.id);
   pageContent.innerHTML = `<div class="empty-state">Data load ho raha hai…</div>`;
   try {
-    if (adminMode) {
+    if (view === "admin" && adminMode) {
       const [batchesResult, studentsResult, liveResult] = await Promise.all([
         supabase.from("batches").select("*").order("name"),
-        supabase.from("profiles").select("id,full_name,email,phone,address,batch_id").order("created_at", { ascending: false }),
+        supabase.rpc("admin_list_students"),
         supabase.from("live_sessions").select("*,batches(name)").order("starts_at", { ascending: false }),
       ]);
       if (batchesResult.error) throw batchesResult.error;
-      if (studentsResult.error) throw studentsResult.error;
       if (liveResult.error) throw liveResult.error;
-      if (!adminMode) return;
+      let students = studentsResult.data;
+      let migrationRequired = false;
+      if (studentsResult.error) {
+        if (!rpcUnavailable(studentsResult.error)) throw studentsResult.error;
+        adminStudentFunctionsAvailable = false;
+        migrationRequired = true;
+        const profilesResult = await supabase
+          .from("profiles")
+          .select("id,full_name,email,phone,address,batch_id,created_at")
+          .order("created_at", { ascending: false });
+        if (profilesResult.error) throw profilesResult.error;
+        students = profilesResult.data.map((student) => ({
+          ...student,
+          email_verified: null,
+          is_active: null,
+        }));
+      } else {
+        adminStudentFunctionsAvailable = true;
+      }
       const liveSessions = liveResult.data.map((session) => ({ ...session, batch: session.batches }));
-      pageContent.innerHTML = adminPanelMarkup(batchesResult.data, studentsResult.data, liveSessions);
+      pageContent.innerHTML = adminPanelMarkup(batchesResult.data, students, liveSessions, {
+        adminFunctionsAvailable: adminStudentFunctionsAvailable,
+        migrationRequired,
+      });
+      return;
+    }
+    if (view === "admin") {
+      currentView = "profile";
+      render();
+      await loadView();
       return;
     }
 
@@ -226,21 +321,30 @@ async function loadView() {
             .subscribe();
         }
       }
-      if (supabase && liveChatChannel) {
-        await supabase.removeChannel(liveChatChannel);
-        liveChatChannel = null;
-        subscribedLiveSessionIds = "";
-      }
       const messagesBySession = new Map();
       for (const chatMessage of chatResult.data) {
         const messages = messagesBySession.get(chatMessage.session_id) || [];
         messages.push(chatMessage);
         messagesBySession.set(chatMessage.session_id, messages);
       }
-      if (view === currentView) pageContent.innerHTML = `${heading("PADHAI KA SAMAY", "Classes", "Live sessions aur class recordings.")}<div class="section-row"><h3>Live session</h3></div>${live.length ? live.map((session) => renderLiveCard(session, messagesBySession.get(session.id) || [])).join("") : emptyState("Abhi koi class live nahi hai.")}<div class="section-row"><h3>Scheduled classes aur recordings</h3></div>${archived.length ? archived.map(renderLiveCard).join("") : emptyState("Abhi koi recording nahi hai.")}`;
+      if (view === currentView) pageContent.innerHTML = `${heading("PADHAI KA SAMAY", "Classes", "Live sessions aur class recordings.")}<div class="section-row"><h3>Live session</h3></div>${live.length ? live.map((session) => renderLiveCard(session, messagesBySession.get(session.id) || [])).join("") : emptyState("Abhi koi class live nahi hai.")}<div class="section-row"><h3>Scheduled classes aur recordings</h3></div>${archived.length ? archived.map((session) => renderLiveCard(session)).join("") : emptyState("Abhi koi recording nahi hai.")}`;
     } else if (view === "community") {
       const { data, error } = await supabase.from("community_posts").select("*").order("created_at", { ascending: false }).limit(50);
       if (error) throw error;
+      const [commentsResult, batchesResult] = await Promise.all([
+        data.length
+          ? supabase.from("community_comments").select("*").in("post_id", data.map((post) => post.id)).order("created_at", { ascending: true })
+          : Promise.resolve({ data: [], error: null }),
+        adminMode ? supabase.from("batches").select("id,name,class_name").eq("is_active", true).order("name") : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (batchesResult.error) throw batchesResult.error;
+      if (commentsResult.error) console.error("Community comments could not be loaded:", commentsResult.error.message);
+      const commentsByPost = new Map();
+      for (const comment of commentsResult.data || []) {
+        const comments = commentsByPost.get(comment.post_id) || [];
+        comments.push(comment);
+        commentsByPost.set(comment.post_id, comments);
+      }
       const postsWithImages = await Promise.all(data.map(async (post) => {
         const [imageResult, avatarResult] = await Promise.all([
           post.image_path ? supabase.storage.from("community-images").createSignedUrl(post.image_path, 300) : Promise.resolve({ data: null, error: null }),
@@ -250,11 +354,52 @@ async function loadView() {
         if (avatarResult.error) throw avatarResult.error;
         return {
           ...post,
+          comments: commentsByPost.get(post.id) || [],
           image_url: imageResult.data?.signedUrl,
           avatar_url: avatarResult.data?.signedUrl,
         };
       }));
-      if (view === currentView) pageContent.innerHTML = renderCommunity(renderPosts(postsWithImages));
+      if (view === currentView) {
+        const commentStatus = commentsResult.error
+          ? "Comments unavailable. Supabase migration aur community_comments policies check karein."
+          : "";
+        pageContent.innerHTML = renderCommunity(renderPosts(postsWithImages, !commentsResult.error), batchesResult.data, commentStatus);
+      }
+    } else if (view === "inbox") {
+      const { data: threads, error: threadsError } = await supabase.from("inbox_threads").select("*").order("updated_at", { ascending: false });
+      if (threadsError) throw threadsError;
+      const selectedThread = threads.find((thread) => thread.id === currentInboxThreadId) || threads[0] || null;
+      currentInboxThreadId = selectedThread?.id || null;
+      const [studentsResult, messagesResult] = await Promise.all([
+        adminMode ? supabase.rpc("admin_list_students") : Promise.resolve({ data: [], error: null }),
+        selectedThread
+          ? supabase.from("inbox_messages").select("*").eq("thread_id", selectedThread.id).order("created_at", { ascending: true })
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (studentsResult.error) throw studentsResult.error;
+      if (messagesResult.error) throw messagesResult.error;
+      const messages = messagesResult.data;
+      const unreadIds = messages.filter((item) => item.sender_id !== currentUser.id && !item.read_at).map((item) => item.id);
+      if (unreadIds.length) {
+        const { error: readError } = await supabase.from("inbox_messages").update({ read_at: new Date().toISOString() }).in("id", unreadIds);
+        if (readError) throw readError;
+        void updateInboxCount(currentUser.id);
+      }
+      if (view === currentView) {
+        pageContent.innerHTML = renderInbox(threads, selectedThread, messages, studentsResult.data);
+        try {
+          if (!inboxChannel) {
+            inboxChannel = supabase
+              .channel(`ds-classes-inbox-${currentUser.id}`)
+              .on("postgres_changes", { event: "INSERT", schema: "public", table: "inbox_messages" }, () => {
+                if (currentView === "inbox") void loadView();
+              })
+              .subscribe();
+          }
+        } catch (realtimeError) {
+          console.warn("Inbox realtime updates unavailable:", realtimeError.message);
+        }
+      }
     } else if (view === "profile") {
       const profile = await getProfile(currentUser);
       currentProfile = profile;
@@ -262,18 +407,28 @@ async function loadView() {
         ? await supabase.storage.from("student-avatars").createSignedUrl(profile.avatar_path, 300)
         : { data: null, error: null };
       if (avatarResult.error) throw avatarResult.error;
-      if (view === currentView) pageContent.innerHTML = renderProfile(profile, avatarResult.data?.signedUrl);
+      if (view === currentView) {
+        const avatarButton = document.querySelector(".avatar-button");
+        avatarButton.innerHTML = avatarResult.data?.signedUrl
+          ? `<img src="${escapeHtml(avatarResult.data.signedUrl)}" alt="">`
+          : escapeHtml(initials(profile.full_name));
+        avatarButton.setAttribute("aria-label", `${profile.full_name} profile`);
+        pageContent.innerHTML = renderProfile(profile, avatarResult.data?.signedUrl);
+      }
     }
   } catch (error) {
     if (view === currentView) {
-      pageContent.innerHTML = `${heading("DS CLASSES", "Data load nahi hua")}<div class="empty-state">${escapeHtml(error.message || "Backend request fail hui. Supabase setup aur access policies check karein.")}</div>`;
+      const helpText = view === "inbox"
+        ? "Inbox ke liye Supabase schema migration aur RLS policies lagu honi chahiye."
+        : "Backend request fail hui. Supabase setup aur access policies check karein.";
+      pageContent.innerHTML = `${heading("DS CLASSES", "Data load nahi hua")}<div class="empty-state">${escapeHtml(error.message || helpText)}<p>${escapeHtml(helpText)}</p></div>`;
     }
   }
 }
 
 function render() {
   document.querySelectorAll("[data-view]").forEach((button) => {
-    button.classList.toggle("active", !adminMode && button.dataset.view === currentView);
+    button.classList.toggle("active", button.dataset.view === currentView);
   });
 }
 
@@ -375,6 +530,48 @@ async function submitDataForm(form) {
   if (form.id === "batch-form") {
     const { error } = await supabase.from("batches").insert({ name: values.name.trim(), class_name: values.class_name.trim() });
     if (error) throw error;
+  } else if (form.classList.contains("batch-edit-form")) {
+    const { error } = await supabase.from("batches").update({
+      name: values.name.trim(),
+      class_name: values.class_name.trim(),
+    }).eq("id", form.dataset.id);
+    if (error) throw error;
+  } else if (form.id === "profile-form") {
+    const fullName = values.full_name.trim();
+    if (!fullName) throw new Error("Naam khaali nahi ho sakta.");
+    const { error } = await supabase.from("profiles").update({
+      full_name: fullName,
+      phone: values.phone.trim(),
+    }).eq("id", currentUser.id);
+    if (error) throw error;
+    currentProfile = await getProfile(currentUser);
+  } else if (form.classList.contains("student-edit-form")) {
+    if (adminStudentFunctionsAvailable) {
+      const { error } = await supabase.rpc("admin_update_student", {
+        target_student_id: form.dataset.id,
+        new_full_name: values.full_name.trim(),
+        new_phone: values.phone.trim(),
+        new_address: values.address.trim(),
+        new_batch_id: values.batch_id || null,
+      });
+      if (error && !rpcUnavailable(error)) throw error;
+      if (rpcUnavailable(error)) adminStudentFunctionsAvailable = false;
+    }
+    if (!adminStudentFunctionsAvailable) {
+      const { data, error } = await supabase
+        .from("profiles")
+        .update({
+          full_name: values.full_name.trim(),
+          phone: values.phone.trim(),
+          address: values.address.trim(),
+          batch_id: values.batch_id || null,
+        })
+        .eq("id", form.dataset.id)
+        .select("id")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error("Student update nahi hua. Admin role aur profiles ki RLS policy check karein.");
+    }
   } else if (form.id === "notice-form") {
     const { error } = await supabase.from("notices").insert({
       batch_id: values.batch_id || null,
@@ -443,6 +640,16 @@ async function submitDataForm(form) {
       .update({ recording_url: recordingUrl.href })
       .eq("id", form.dataset.sessionId);
     if (error) throw error;
+  } else if (form.classList.contains("session-links-form")) {
+    const streamUrl = values.stream_url ? new URL(values.stream_url) : null;
+    const recordingUrl = values.recording_url ? new URL(values.recording_url) : null;
+    if (streamUrl && streamUrl.protocol !== "https:") throw new Error("Class link HTTPS hona chahiye.");
+    if (recordingUrl && recordingUrl.protocol !== "https:") throw new Error("Recording link HTTPS hona chahiye.");
+    const { error } = await supabase.from("live_sessions").update({
+      stream_url: streamUrl?.href || null,
+      recording_url: recordingUrl?.href || null,
+    }).eq("id", form.dataset.sessionId);
+    if (error) throw error;
   }
   form.reset();
   await loadView();
@@ -463,7 +670,7 @@ async function submitCommunityPost(form) {
     if (error) throw error;
   }
   const { error } = await supabase.from("community_posts").insert({
-    batch_id: currentProfile.batch_id,
+    batch_id: form.elements.batch_id?.value || currentProfile.batch_id,
     author_id: currentUser.id,
     author_name: currentProfile.full_name,
     body,
@@ -479,6 +686,19 @@ async function submitCommunityPost(form) {
   await loadView();
 }
 
+async function submitCommunityComment(form) {
+  const body = form.elements.body.value.trim();
+  if (!body) throw new Error("Comment likhein.");
+  const { error } = await supabase.from("community_comments").insert({
+    post_id: form.dataset.postId,
+    author_id: currentUser.id,
+    author_name: currentProfile.full_name,
+    body,
+  });
+  if (error) throw error;
+  await loadView();
+}
+
 async function submitLiveComment(form) {
   const { error } = await supabase.from("live_chat").insert({
     session_id: form.dataset.sessionId,
@@ -487,6 +707,71 @@ async function submitLiveComment(form) {
     body: form.elements.body.value.trim(),
   });
   if (error) throw error;
+  await loadView();
+}
+
+async function submitInboxForm(form) {
+  const values = formValues(form);
+  if (form.id === "new-thread-form") {
+    const { data, error } = await supabase.rpc("start_inbox_thread", {
+      thread_subject: values.subject.trim(),
+      first_message: values.body.trim(),
+    });
+    if (error) throw error;
+    currentInboxThreadId = data;
+  } else if (form.classList.contains("inbox-reply-form")) {
+    const body = values.body.trim();
+    if (!body) throw new Error("Message likhein.");
+    const { error } = await supabase.from("inbox_messages").insert({
+      thread_id: form.dataset.threadId,
+      sender_id: currentUser.id,
+      body,
+    });
+    if (error) throw error;
+    currentInboxThreadId = form.dataset.threadId;
+  }
+  await loadView();
+}
+
+async function handleAdminAction(button) {
+  const id = button.dataset.id;
+  if (button.dataset.action === "archive-batch") {
+    const batchName = button.closest(".batch-control-row").elements.name.value;
+    if (!window.confirm(`"${batchName}" batch ko archive karein? Isse existing study data delete nahi hoga.`)) return;
+    const { error } = await supabase.from("batches").update({ is_active: false }).eq("id", id);
+    if (error) throw error;
+  } else if (button.dataset.action === "toggle-student") {
+    const makingActive = button.dataset.active !== "true";
+    const verb = makingActive ? "reactivate" : "deactivate";
+    if (!window.confirm(`${button.dataset.name || "Is student"} ko ${verb} karein?`)) return;
+    const { error } = await supabase.rpc("admin_set_student_active", {
+      target_student_id: id,
+      make_active: makingActive,
+    });
+    if (rpcUnavailable(error)) {
+      adminStudentFunctionsAvailable = false;
+      throw new Error("Student deactivate/reactivate ke liye Supabase admin migration pehle apply karein.");
+    }
+    if (error) throw error;
+  } else if (button.dataset.action === "delete-student") {
+    const name = button.dataset.name || "Student";
+    if (!window.confirm(`${name} ka account permanently delete hoga. Is student ke profile, community posts/comments aur inbox bhi delete ho sakte hain. Yeh undo nahi hoga. Jaari rakhein?`)) return;
+    const { error } = await supabase.rpc("admin_delete_student", { target_student_id: id });
+    if (rpcUnavailable(error)) {
+      adminStudentFunctionsAvailable = false;
+      throw new Error("Student account delete ke liye Supabase admin migration pehle apply karein.");
+    }
+    if (error) throw error;
+  } else if (button.dataset.action === "end-live") {
+    if (!window.confirm("Live class stop karein?")) return;
+    const { error } = await supabase.from("live_sessions").update({
+      status: "ended",
+      ended_at: new Date().toISOString(),
+    }).eq("id", id);
+    if (error) throw error;
+  } else {
+    return;
+  }
   await loadView();
 }
 
@@ -503,6 +788,10 @@ async function leaveDashboard() {
     liveChatChannel = null;
     subscribedLiveSessionIds = "";
   }
+  if (supabase && inboxChannel) {
+    await supabase.removeChannel(inboxChannel);
+    inboxChannel = null;
+  }
   currentUser = null;
   currentProfile = null;
   adminMode = false;
@@ -510,17 +799,26 @@ async function leaveDashboard() {
 }
 
 app.addEventListener("click", async (event) => {
-  const button = event.target.closest("button, [data-action='open-note']");
-  if (!button) return;
-  if (button.dataset.view) {
-    currentView = button.dataset.view;
+  const viewLink = event.target.closest("[data-view]");
+  if (viewLink) {
+    event.preventDefault();
+    const nextView = viewLink.dataset.view;
+    if (!supportedViews.has(nextView) || (nextView === "admin" && !adminMode)) return;
+    currentView = nextView;
     render();
     if (supabase && currentUser) await loadView();
     window.scrollTo(0, 0);
     return;
   }
+  const button = event.target.closest("button, [data-action='open-note']");
+  if (!button) return;
   if (button.dataset.action === "sign-out") {
     await leaveDashboard();
+    return;
+  }
+  if (button.dataset.action === "select-thread") {
+    currentInboxThreadId = button.dataset.id;
+    await loadView();
     return;
   }
   if (button.dataset.action === "open-note" && supabase && currentUser) {
@@ -537,10 +835,12 @@ app.addEventListener("click", async (event) => {
     window.open(link.signedUrl, "_blank", "noopener,noreferrer");
     return;
   }
-  if (button.dataset.action === "end-live" && supabase) {
-    const { error } = await supabase.from("live_sessions").update({ status: "ended", ended_at: new Date().toISOString() }).eq("id", button.dataset.id);
-    if (error) alert(`Class end nahi hui: ${error.message}`);
-    else await loadView();
+  if (["archive-batch", "toggle-student", "delete-student", "end-live"].includes(button.dataset.action) && supabase) {
+    try {
+      await handleAdminAction(button);
+    } catch (error) {
+      alert(error.message || "Admin action poori nahi hui.");
+    }
   }
 });
 
@@ -548,34 +848,38 @@ app.addEventListener("change", async (event) => {
   if (event.target.id === "post-image") {
     document.querySelector("#post-image-name").textContent = event.target.files[0]?.name || "Text ya photo · max 8 MB";
   }
-  if (event.target.dataset.action === "assign-batch" && supabase) {
-    const batchId = event.target.value;
-    const { error } = await supabase.from("profiles").update({ batch_id: batchId || null }).eq("id", event.target.dataset.id);
-    if (error) {
-      alert(`Batch assign nahi hua: ${error.message}`);
-      await loadView();
-    }
+  if (event.target.id === "avatar-file") {
+    document.querySelector("#avatar-file-name").textContent = event.target.files[0]?.name || "JPG, PNG ya WebP · max 5 MB";
   }
 });
 
 app.addEventListener("submit", async (event) => {
   const form = event.target;
-  if (["batch-form", "notice-form", "note-form", "live-form", "community-form", "avatar-form"].includes(form.id) || form.classList.contains("live-chat-form") || form.classList.contains("recording-form")) {
+  if (form.matches("form") && (["batch-form", "notice-form", "note-form", "live-form", "community-form", "avatar-form", "profile-form", "new-thread-form"].includes(form.id) || form.classList.contains("live-chat-form") || form.classList.contains("community-comment-form") || form.classList.contains("recording-form") || form.classList.contains("batch-edit-form") || form.classList.contains("student-edit-form") || form.classList.contains("session-links-form") || form.classList.contains("inbox-reply-form"))) {
     event.preventDefault();
     const submit = form.querySelector("[type='submit']");
     submit.disabled = true;
     try {
       if (form.id === "community-form") await submitCommunityPost(form);
-        else if (form.classList.contains("live-chat-form")) await submitLiveComment(form);
-        else await submitDataForm(form);
+      else if (form.classList.contains("community-comment-form")) await submitCommunityComment(form);
+      else if (form.classList.contains("live-chat-form")) await submitLiveComment(form);
+      else if (form.id === "new-thread-form" || form.classList.contains("inbox-reply-form")) await submitInboxForm(form);
+      else await submitDataForm(form);
     } catch (error) {
       alert(error.message || "Request poori nahi hui.");
     } finally {
-      submit.disabled = false;
+      if (submit) submit.disabled = false;
     }
   }
 });
 
+app.addEventListener("input", (event) => {
+  if (event.target.id !== "student-search") return;
+  const query = event.target.value.trim().toLowerCase();
+  document.querySelectorAll("[data-student-row]").forEach((row) => {
+    row.classList.toggle("hidden", !row.dataset.search.includes(query));
+  });
+});
 document.querySelector("#student-google-login").addEventListener("click", () => {
   void startGoogleSignIn("student");
 });

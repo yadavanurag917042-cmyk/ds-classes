@@ -86,6 +86,7 @@
             <button class="nav-item" data-view="classes"><span>▶</span> Classes</button>
             <button class="nav-item" data-view="notes"><span>▤</span> Notes</button>
             <button class="nav-item" data-view="community"><span>◎</span> Community</button>
+            <button class="nav-item" data-view="inbox"><span>✉</span> Inbox <span class="inbox-count hidden" id="desktop-inbox-count"></span></button>
             <button class="nav-item" data-view="profile"><span>◉</span> Profile</button>
           </nav>
           <div class="sidebar-bottom">
@@ -107,8 +108,8 @@
             </button>
             <div class="topbar-spacer"></div>
             <span class="connection-badge" id="connection-badge"><span></span> CONNECTING</span>
-            <button class="notice-button" data-view="home" type="button" aria-label="Notices">
-              ♧ <span class="notification-dot"></span>
+            <button class="notice-button" data-view="inbox" type="button" aria-label="Inbox">
+              ✉ <span class="notification-dot hidden" id="topbar-inbox-dot"></span>
             </button>
             <button class="avatar-button" data-view="profile" type="button" aria-label="Profile">
               S
@@ -124,6 +125,7 @@
           <button class="mobile-nav-item" data-view="classes"><span>▶</span>Classes</button>
           <button class="mobile-nav-item" data-view="notes"><span>▤</span>Notes</button>
           <button class="mobile-nav-item" data-view="community"><span>◎</span>Community</button>
+          <button class="mobile-nav-item" data-view="inbox"><span>✉</span>Inbox</button>
           <button class="mobile-nav-item" data-view="profile"><span>◉</span>Profile</button>
         </nav>
       </section>
