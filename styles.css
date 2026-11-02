@@ -231,6 +231,16 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
+.auth-form {
+  display: grid;
+}
+
+.auth-step-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .login-card input,
 .login-card textarea,
 .community-form textarea {

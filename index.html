@@ -36,30 +36,88 @@
               </div>
               <span class="lock-icon" aria-hidden="true">↗</span>
             </div>
-            <div id="registration-fields" class="registration-fields hidden">
+            <form id="student-password-form" class="auth-form">
+              <label for="student-login-phone">Mobile number</label>
+              <input id="student-login-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" inputmode="tel" required />
+              <label for="student-login-password">Password</label>
+              <input id="student-login-password" name="password" type="password" autocomplete="current-password" required />
+              <button class="button button-primary button-full" id="student-login-submit" type="submit">Mobile aur password se login karein →</button>
+            </form>
+            <form id="student-setup-form" class="auth-form hidden">
+              <p class="form-note" id="student-setup-instructions">Gmail verify karke account banayein.</p>
               <label for="student-name">Aapka poora naam</label>
-              <input id="student-name" name="name" type="text" placeholder="Jaise: Rahul Kumar" autocomplete="name" />
-              <label for="student-phone">Phone number</label>
-              <input id="student-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" minlength="10" maxlength="16" />
+              <input id="student-name" name="name" type="text" placeholder="Jaise: Rahul Kumar" autocomplete="name" required />
+              <label for="student-phone">Mobile number</label>
+              <input id="student-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" inputmode="tel" required />
               <label for="student-address">Address</label>
-              <textarea id="student-address" name="address" placeholder="Apna address likhein" autocomplete="street-address"></textarea>
-            </div>
-            <button class="button button-primary button-full" id="student-google-login" type="button">
-              Google se continue karein <span aria-hidden="true">→</span>
-            </button>
+              <textarea id="student-address" name="address" placeholder="Apna address likhein" autocomplete="street-address" required></textarea>
+              <label for="student-email">Gmail address</label>
+              <input id="student-email" name="email" type="email" placeholder="name@gmail.com" autocomplete="email" inputmode="email" required />
+              <label for="student-new-password">Password set karein (kam se kam 8 characters)</label>
+              <input id="student-new-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+              <label for="student-confirm-password">Password dobara daalein</label>
+              <input id="student-confirm-password" name="password-confirm" type="password" autocomplete="new-password" minlength="8" required />
+              <button class="button button-primary button-full" id="student-setup-submit" type="submit">Gmail par confirmation link bhejein →</button>
+              <button class="text-button" type="button" data-auth-action="cancel-setup" data-purpose="student">Wapas</button>
+            </form>
+            <form id="student-recovery-request-form" class="auth-form hidden">
+              <p class="form-note">Purane account ke registered Gmail par password setup link bhejenge.</p>
+              <label for="student-recovery-email">Registered Gmail address</label>
+              <input id="student-recovery-email" name="email" type="email" placeholder="name@gmail.com" autocomplete="email" required />
+              <button class="button button-primary button-full" id="student-recovery-request-submit" type="submit">Gmail par secure setup link bhejein →</button>
+              <button class="text-button" type="button" data-auth-action="cancel-setup" data-purpose="student">Wapas</button>
+            </form>
+            <form id="student-recovery-form" class="auth-form hidden">
+              <p class="form-note">Gmail link verify ho gaya. Mobile number aur naya password set karein.</p>
+              <label for="student-recovery-phone">Mobile number</label>
+              <input id="student-recovery-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" inputmode="tel" required />
+              <label for="student-recovery-password">Naya password (kam se kam 8 characters)</label>
+              <input id="student-recovery-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+              <label for="student-recovery-confirm-password">Password dobara daalein</label>
+              <input id="student-recovery-confirm-password" name="password-confirm" type="password" autocomplete="new-password" minlength="8" required />
+              <button class="button button-primary button-full" id="student-recovery-submit" type="submit">Password save karke login karein →</button>
+            </form>
             <p class="form-note" id="login-message" aria-live="polite">
-              Student account banane ya login karne ke liye apna Google account use karein.
+              Student apne registered mobile number aur password se login karein.
             </p>
-            <button class="text-button" id="register-toggle" type="button">Naye student? Account banayein</button>
+            <button class="text-button hidden" id="student-confirmation-back" type="button">Login par wapas jaayein</button>
+            <div class="auth-step-actions" id="student-setup-actions">
+              <button class="text-button" id="student-register-button" type="button">Naye student? Account banayein</button>
+              <button class="text-button" id="student-existing-button" type="button">Purana account? Password set karein</button>
+            </div>
           </section>
 
           <section class="login-card hidden" id="admin-login-form">
             <div class="card-heading">
-              <div><p class="eyebrow">AUTHORIZED ADMIN ONLY</p><h2>Admin Google Sign-In</h2></div>
+              <div><p class="eyebrow">AUTHORIZED ADMIN ONLY</p><h2>Admin Login</h2></div>
               <span class="lock-icon" aria-hidden="true">↗</span>
             </div>
-            <button class="button button-primary button-full" id="admin-google-login" type="button">Admin Google account se continue karein →</button>
-            <p class="form-note" id="admin-login-message" aria-live="polite">Sirf Supabase mein approved admin role wala Google account login kar sakta hai.</p>
+            <form id="admin-password-form" class="auth-form">
+              <label for="admin-login-phone">Admin mobile number</label>
+              <input id="admin-login-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" inputmode="tel" required />
+              <label for="admin-login-password">Password</label>
+              <input id="admin-login-password" name="password" type="password" autocomplete="current-password" required />
+              <button class="button button-primary button-full" id="admin-login-submit" type="submit">Secure admin login →</button>
+            </form>
+            <form id="admin-setup-form" class="auth-form hidden">
+              <p class="form-note">Pehli baar Gmail link verify karke admin password set karein.</p>
+              <label for="admin-email">Registered admin Gmail</label>
+              <input id="admin-email" name="email" type="email" placeholder="admin@gmail.com" autocomplete="email" inputmode="email" required />
+              <button class="button button-primary button-full" id="admin-setup-submit" type="submit">Gmail par secure setup link bhejein →</button>
+              <button class="text-button" type="button" data-auth-action="cancel-setup" data-purpose="admin">Wapas</button>
+            </form>
+            <form id="admin-recovery-form" class="auth-form hidden">
+              <p class="form-note">Admin Gmail link verify ho gaya. Mobile number aur naya password set karein.</p>
+              <label for="admin-setup-phone">Admin mobile number</label>
+              <input id="admin-setup-phone" name="phone" type="tel" placeholder="10 digit mobile number" autocomplete="tel" inputmode="tel" required />
+              <label for="admin-recovery-password">Naya password (kam se kam 8 characters)</label>
+              <input id="admin-recovery-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+              <label for="admin-recovery-confirm-password">Password dobara daalein</label>
+              <input id="admin-recovery-confirm-password" name="password-confirm" type="password" autocomplete="new-password" minlength="8" required />
+              <button class="button button-primary button-full" id="admin-recovery-submit" type="submit">Password save karke login karein →</button>
+            </form>
+            <p class="form-note" id="admin-login-message" aria-live="polite">Admin access server aur app dono mein app_metadata.role = 'admin' se verify hota hai.</p>
+            <button class="text-button" id="admin-setup-button" type="button">Pehli baar? Gmail se password set karein</button>
             <button class="text-button" id="admin-login-back" type="button">Wapas student login par</button>
           </section>
 

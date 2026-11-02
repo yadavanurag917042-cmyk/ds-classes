@@ -26,15 +26,13 @@ const supabase = backendConfigured
 let currentView = "home";
 let currentUser = null;
 let currentProfile = null;
-let authPurpose = "student";
-let registrationMode = false;
 let adminMode = false;
 let liveChatChannel = null;
 let subscribedLiveSessionIds = "";
 let inboxChannel = null;
 let currentInboxThreadId = null;
-let nativePluginsPromise = null;
 let adminStudentFunctionsAvailable = true;
+const handledAuthCodes = new Set();
 const supportedViews = new Set(["home", "notices", "classes", "notes", "community", "inbox", "profile", "admin"]);
 
 function escapeHtml(value) {
@@ -110,8 +108,8 @@ function renderCommunity(rows, batches = [], statusMessage = "") {
 
 function renderProfile(profile, avatarUrl) {
   const profileDescription = adminMode
-    ? "Apna admin naam aur profile photo badlein. Google login email surakshit aur read-only rahega."
-    : "Apna naam aur phone update karein; email Google account se securely linked hai.";
+    ? "Apna admin naam aur profile photo badlein. Login email surakshit aur read-only rahega."
+    : "Apna naam aur phone update karein; login email securely linked hai.";
   return `${heading("AAPKA ACCOUNT", "Profile", profileDescription)}<article class="profile-card"><div class="profile-avatar">${avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="Aapki profile photo">` : escapeHtml(initials(profile.full_name))}</div><div class="profile-details"><h3>${escapeHtml(profile.full_name)}</h3><p>${adminMode ? "DS CLASSES administrator" : "DS CLASSES student"}</p><span class="profile-tag">${escapeHtml(profile.batch?.name || (adminMode ? "Admin account" : "Batch abhi assign nahi"))}</span><form class="avatar-form" id="avatar-form"><label class="photo-upload" for="avatar-file">Profile picture chunein</label><input id="avatar-file" name="file" type="file" accept="image/jpeg,image/png,image/webp" aria-label="Profile picture file" required><span class="community-hint" id="avatar-file-name">JPG, PNG ya WebP · max 5 MB</span><button class="button button-secondary button-small" type="submit">Photo save karein</button></form></div><div class="profile-fields"><div class="profile-field"><small>Email</small><strong>${escapeHtml(profile.email || "Email linked nahi hai")}</strong></div><div class="profile-field"><small>Assigned batch</small><strong>${escapeHtml(profile.batch?.name || "—")}</strong></div></div></article><section class="admin-section profile-edit"><h3>${adminMode ? "Admin profile details" : "Profile details"}</h3><form id="profile-form" class="admin-form"><label>Full name<input name="full_name" value="${escapeHtml(profile.full_name)}" maxlength="120" autocomplete="name" required></label><label>Phone<input name="phone" type="tel" value="${escapeHtml(profile.phone || "")}" maxlength="40" autocomplete="tel"></label><button class="button button-primary button-small" type="submit">Naam aur phone save karein</button></form></section>${adminMode ? `<section class="admin-section"><h3>Admin tools</h3><p class="community-hint">Student app ke Home, Classes, Notes aur Community bhi aapke liye available hain.</p><button class="button button-primary" type="button" data-view="admin">Admin Dashboard kholein</button></section>` : ""}<div class="admin-actions"><button class="button button-secondary" type="button" data-action="sign-out">Logout</button></div>`;
 }
 
@@ -195,24 +193,11 @@ async function enterDashboard(user, requiredPurpose = "student") {
   if (requiredPurpose === "admin" && user.app_metadata?.role !== "admin") {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
-    throw new Error("Yeh Google account Supabase mein admin ke roop mein approve nahi hai.");
+    throw new Error("Is email ko Supabase mein admin role nahi mila hai.");
   }
   currentUser = user;
   currentProfile = await getProfile(user);
   currentInboxThreadId = null;
-  const pendingProfile = sessionStorage.getItem("ds-classes.pending-student-profile");
-  if (pendingProfile && requiredPurpose === "student") {
-    sessionStorage.removeItem("ds-classes.pending-student-profile");
-    const details = JSON.parse(pendingProfile);
-    const updates = {
-      full_name: details.full_name || currentProfile.full_name,
-      phone: details.phone || currentProfile.phone,
-      address: details.address || currentProfile.address,
-    };
-    const { error } = await supabase.from("profiles").update(updates).eq("id", user.id);
-    if (error) throw error;
-    currentProfile = await getProfile(user);
-  }
   adminMode = user.app_metadata?.role === "admin";
   adminStudentFunctionsAvailable = true;
   currentView = "home";
@@ -432,92 +417,327 @@ function render() {
   });
 }
 
-function oauthRedirectUrl() {
-  if (window.Capacitor?.isNativePlatform?.()) {
-    return "com.dsclasses.app://login-callback/";
-  }
-  if (!["http:", "https:"].includes(window.location.protocol)) {
-    throw new Error("Web login ke liye app ko file se nahi, HTTP/HTTPS URL se kholein. Android app mein Google login button use karein.");
-  }
-  const redirectUrl = new URL(window.location.pathname, window.location.origin);
-  return redirectUrl.toString();
+function normalizeIndianMobile(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) digits = digits.slice(2);
+  return /^[6-9]\d{9}$/.test(digits) ? digits : "";
 }
 
-async function startGoogleSignIn(purpose) {
-  authPurpose = purpose;
-  const target = purpose === "admin" ? adminLoginMessage : loginMessage;
-  if (purpose === "admin") sessionStorage.removeItem("ds-classes.pending-student-profile");
-  if (!supabase) {
-    message(target, "Google login ke liye Supabase project configuration zaroori hai.", true);
-    return;
+function authRedirectUrl(parameters) {
+  const isNativeApp = window.Capacitor?.isNativePlatform?.() === true;
+  const redirect = isNativeApp
+    ? new URL("com.dsclasses.app://login-callback")
+    : new URL(window.location.pathname, window.location.origin);
+  for (const [key, value] of Object.entries(parameters)) {
+    redirect.searchParams.set(key, value);
   }
-  sessionStorage.setItem("ds-classes.oauth-purpose", purpose);
-
-  const isNative = Boolean(window.Capacitor?.isNativePlatform?.());
-  if (purpose === "student" && registrationMode) {
-    const fields = document.querySelector("#registration-fields");
-    if (!fields.querySelector("#student-name").reportValidity()
-      || !fields.querySelector("#student-phone").reportValidity()
-      || !fields.querySelector("#student-address").reportValidity()) return;
-    sessionStorage.setItem("ds-classes.pending-student-profile", JSON.stringify({
-      full_name: fields.querySelector("#student-name").value.trim(),
-      phone: fields.querySelector("#student-phone").value.trim(),
-      address: fields.querySelector("#student-address").value.trim(),
-    }));
-  } else if (purpose === "student") {
-    sessionStorage.removeItem("ds-classes.pending-student-profile");
-  }
-
-  const button = document.querySelector(purpose === "admin" ? "#admin-google-login" : "#student-google-login");
-  button.disabled = true;
-  message(target, "Google login khola ja raha hai…");
-  let browserCloseListener = null;
-  try {
-    if (isNative) await loadNativePlugins();
-    const browser = window.Capacitor?.Plugins?.Browser;
-    if (isNative && !browser) {
-      throw new Error("Android Google login ke liye Browser plugin available nahi hai. App ko dobara build karein.");
-    }
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: oauthRedirectUrl(),
-        skipBrowserRedirect: isNative,
-      },
-    });
-    if (error) throw error;
-    if (isNative) {
-      if (!data.url) throw new Error("Supabase ne Google login URL nahi diya.");
-      browserCloseListener = await browser.addListener("browserFinished", () => {
-        button.disabled = false;
-        void browserCloseListener.remove();
-      });
-      await browser.open({ url: data.url });
-    }
-  } catch (error) {
-    sessionStorage.removeItem("ds-classes.oauth-purpose");
-    if (browserCloseListener) await browserCloseListener.remove();
-    sessionStorage.removeItem("ds-classes.pending-student-profile");
-    message(target, error.message || "Google login shuru nahi ho saka.", true);
-    button.disabled = false;
-  }
+  return redirect.toString();
 }
 
 function showAuth(purpose = "student") {
-  authPurpose = purpose;
+  document.querySelector("#student-password-form").classList.remove("hidden");
+  document.querySelector("#student-setup-form").classList.add("hidden");
+  document.querySelector("#student-recovery-request-form").classList.add("hidden");
+  document.querySelector("#student-recovery-form").classList.add("hidden");
+  document.querySelector("#student-setup-actions").classList.remove("hidden");
+  document.querySelector("#student-confirmation-back").classList.add("hidden");
+  document.querySelector("#admin-password-form").classList.remove("hidden");
+  document.querySelector("#admin-setup-form").classList.add("hidden");
+  document.querySelector("#admin-recovery-form").classList.add("hidden");
+  document.querySelector("#admin-setup-button").classList.remove("hidden");
+  document.querySelector("#student-password-form").reset();
+  document.querySelector("#student-setup-form").reset();
+  document.querySelector("#student-recovery-request-form").reset();
+  document.querySelector("#student-recovery-form").reset();
+  document.querySelector("#admin-password-form").reset();
+  document.querySelector("#admin-setup-form").reset();
+  document.querySelector("#admin-recovery-form").reset();
   const isAdmin = purpose === "admin";
   loginForm.classList.toggle("hidden", isAdmin);
   adminLoginForm.classList.toggle("hidden", !isAdmin);
   document.querySelector("#admin-login-button").classList.toggle("hidden", isAdmin);
-  if (isAdmin) {
-    message(adminLoginMessage, "Sirf Supabase mein admin role wala Google account anumodit hai.");
+  if (isAdmin) message(adminLoginMessage, "Admin access server aur app dono mein app_metadata.role = 'admin' se verify hota hai.");
+  else message(loginMessage, "Student apne registered mobile number aur password se login karein.");
+}
+
+function openSetup(purpose, mode) {
+  const isAdmin = purpose === "admin";
+  const login = document.querySelector(`#${purpose}-password-form`);
+  login.classList.add("hidden");
+  if (purpose === "student") {
+    document.querySelector("#student-confirmation-back").classList.add("hidden");
+    document.querySelector("#student-setup-form").classList.toggle("hidden", mode !== "signup");
+    document.querySelector("#student-recovery-request-form").classList.toggle("hidden", mode !== "existing");
+    document.querySelector("#student-setup-actions").classList.add("hidden");
   } else {
-    registrationMode = false;
-    document.querySelector("#registration-fields").classList.add("hidden");
-    document.querySelector("#register-toggle").textContent = "Naye student? Account banayein";
-    ["name", "phone", "address"].forEach((name) => {
-      document.querySelector(`#student-${name}`).required = false;
+    document.querySelector("#admin-setup-form").classList.remove("hidden");
+    document.querySelector("#admin-setup-button").classList.add("hidden");
+  }
+  message(isAdmin ? adminLoginMessage : loginMessage, "");
+}
+
+async function submitSetup(purpose) {
+  const form = document.querySelector("#student-setup-form");
+  const target = loginMessage;
+  const submit = document.querySelector(`#${purpose}-setup-submit`);
+  if (!supabase) {
+    message(target, "Account setup ke liye Supabase project configuration zaroori hai.", true);
+    return;
+  }
+  if (!form.reportValidity()) return;
+
+  const values = formValues(form);
+  const phone = normalizeIndianMobile(values.phone);
+  if (!phone) {
+    message(target, "Sahi 10 digit Indian mobile number daalein.", true);
+    return;
+  }
+  if (values.password !== values["password-confirm"]) {
+    message(target, "Dono password match nahi karte.", true);
+    return;
+  }
+
+  submit.disabled = true;
+  message(target, "Gmail par confirmation link bheja ja raha hai…");
+  try {
+    const { data, error } = await supabase.auth.signUp({
+      email: values.email.trim().toLowerCase(),
+      password: values.password,
+      options: {
+        emailRedirectTo: authRedirectUrl({ "email-confirmed": "1" }),
+        data: {
+          full_name: values.name.trim(),
+          phone,
+          address: values.address.trim(),
+        },
+      },
     });
+    if (error) throw error;
+    if (!data.user?.identities?.length) {
+      throw new Error("Yeh Gmail pehle se registered hai. Purana account ho to 'Password set karein' option chunein.");
+    }
+    if (data.session || data.user?.email_confirmed_at) {
+      await supabase.auth.signOut();
+      throw new Error("Gmail confirmation link zaroori hai. Supabase mein Email confirmations enable karein.");
+    }
+    form.classList.add("hidden");
+    document.querySelector("#student-confirmation-back").classList.remove("hidden");
+    message(target, "Gmail par confirmation link bheja hai. Link kholne ke baad account mein automatic login ho jayega.");
+  } catch (error) {
+    message(target, `Confirmation email nahi bheji ja saki: ${error.message || "Supabase email settings check karein."}`, true);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function requestPasswordSetup(purpose) {
+  const isAdmin = purpose === "admin";
+  const form = document.querySelector(isAdmin ? "#admin-setup-form" : "#student-recovery-request-form");
+  const target = isAdmin ? adminLoginMessage : loginMessage;
+  const submit = document.querySelector(isAdmin ? "#admin-setup-submit" : "#student-recovery-request-submit");
+  if (!supabase) {
+    message(target, "Password setup ke liye Supabase configuration zaroori hai.", true);
+    return;
+  }
+  if (!form.reportValidity()) return;
+  const email = form.elements.email.value.trim().toLowerCase();
+  const redirectTo = authRedirectUrl({ "password-setup": purpose });
+  submit.disabled = true;
+  message(target, "Gmail par secure password setup link bheja ja raha hai…");
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectTo.toString() });
+    if (error) throw error;
+    message(target, "Agar Gmail account maujood hai, us par password setup link bhej diya gaya hai. Link kholkar naya password set karein.");
+  } catch (error) {
+    message(target, `Setup link nahi bheja ja saka: ${error.message}`, true);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function saveRecoveredPassword(purpose) {
+  const isAdmin = purpose === "admin";
+  const form = document.querySelector(`#${purpose}-recovery-form`);
+  const target = isAdmin ? adminLoginMessage : loginMessage;
+  const button = document.querySelector(`#${purpose}-recovery-submit`);
+  if (!supabase || !form.reportValidity()) return;
+
+  const values = formValues(form);
+  const phone = normalizeIndianMobile(values.phone);
+  if (!phone) {
+    message(target, "Sahi 10 digit Indian mobile number daalein.", true);
+    return;
+  }
+  if (values.password !== values["password-confirm"]) {
+    message(target, "Dono password match nahi karte.", true);
+    return;
+  }
+
+  button.disabled = true;
+  message(target, "Naya password save ho raha hai…");
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    const user = data.user;
+    if (!user || !user.email_confirmed_at) {
+      throw new Error("Gmail setup link verify nahi hua ya expire ho gaya. Naya link mangayein.");
+    }
+    if (purpose === "admin" && user.app_metadata?.role !== "admin") {
+      await supabase.auth.signOut();
+      throw new Error("Is account ko Supabase mein admin role nahi mila hai.");
+    }
+    if (purpose === "student" && user.app_metadata?.role === "admin") {
+      await supabase.auth.signOut();
+      throw new Error("Admin account setup ke liye admin login screen ka use karein.");
+    }
+
+    const { error: passwordError } = await supabase.auth.updateUser({ password: values.password });
+    if (passwordError) throw passwordError;
+
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({ phone })
+      .eq("id", user.id);
+    if (profileError) throw new Error(`Password set ho gaya, lekin mobile number save nahi hua: ${profileError.message}`);
+    history.replaceState(null, "", window.location.pathname);
+    form.reset();
+    await enterDashboard(user, purpose);
+  } catch (error) {
+    message(target, error.message || "Password setup nahi hua. Gmail link se dobara try karein.", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showPasswordSetup(user, purpose) {
+  if (purpose === "admin" && user.app_metadata?.role !== "admin") {
+    void supabase.auth.signOut();
+    showAuth("admin");
+    message(adminLoginMessage, "Yeh account admin nahi hai. Admin password setup link istemal karein.", true);
+    return;
+  }
+  if (purpose === "student" && user.app_metadata?.role === "admin") {
+    void supabase.auth.signOut();
+    showAuth("student");
+    message(loginMessage, "Admin account ko student setup se use nahi kar sakte.", true);
+    return;
+  }
+
+  loginForm.classList.toggle("hidden", purpose === "admin");
+  adminLoginForm.classList.toggle("hidden", purpose !== "admin");
+  document.querySelector("#admin-login-button").classList.add("hidden");
+  document.querySelector(`#${purpose}-password-form`).classList.add("hidden");
+  document.querySelector(`#${purpose}-recovery-form`).classList.remove("hidden");
+  document.querySelector(`#${purpose}-recovery-request-form`).classList.add("hidden");
+  document.querySelector("#student-setup-actions").classList.add("hidden");
+  document.querySelector("#admin-setup-button").classList.add("hidden");
+  message(purpose === "admin" ? adminLoginMessage : loginMessage, "Gmail link verify ho gaya. Naya mobile number aur password set karein.");
+}
+
+async function handleAuthRedirect(url) {
+  try {
+    const callback = new URL(url);
+    if (callback.hostname !== "login-callback" && callback.protocol === "com.dsclasses.app:") {
+      throw new Error("Auth callback URL pahchana nahi gaya.");
+    }
+
+    let session;
+    const code = callback.searchParams.get("code");
+    if (code) {
+      if (handledAuthCodes.has(code)) return;
+      handledAuthCodes.add(code);
+      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+      if (error) throw error;
+      session = data.session;
+    } else {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      session = data.session;
+    }
+
+    if (!session?.user) throw new Error("Verification link se login session nahi mili. Link dobara kholein.");
+    const purpose = callback.searchParams.get("password-setup");
+    if (purpose === "student" || purpose === "admin") {
+      history.replaceState(null, "", window.location.pathname);
+      showPasswordSetup(session.user, purpose);
+      return;
+    }
+    if (!session.user.email_confirmed_at) throw new Error("Gmail confirmation poori nahi hui.");
+    history.replaceState(null, "", window.location.pathname);
+    await enterDashboard(session.user, session.user.app_metadata?.role === "admin" ? "admin" : "student");
+  } catch (error) {
+    const purpose = new URL(url).searchParams.get("password-setup") === "admin" ? "admin" : "student";
+    showAuth(purpose);
+    message(
+      purpose === "admin" ? adminLoginMessage : loginMessage,
+      error.message || "Gmail link verify nahi hua ya expire ho gaya.",
+      true,
+    );
+  }
+}
+
+async function registerNativeAuthLinks() {
+  const capacitor = window.Capacitor;
+  if (!capacitor?.isNativePlatform?.() || !capacitor.registerPlugin) return false;
+  const nativeApp = capacitor.registerPlugin("App");
+  try {
+    await nativeApp.addListener("appUrlOpen", ({ url }) => {
+      if (url?.startsWith("com.dsclasses.app://login-callback")) void handleAuthRedirect(url);
+    });
+    const launch = await nativeApp.getLaunchUrl();
+    if (launch?.url?.startsWith("com.dsclasses.app://login-callback")) {
+      await handleAuthRedirect(launch.url);
+      return true;
+    }
+  } catch (error) {
+    console.error("Native email-confirmation link handling could not start:", error);
+    message(loginMessage, "App ke email-link setup mein dikkat hai. Browser se verification link kholein.", true);
+  }
+  return false;
+}
+
+async function signInWithPhone(purpose) {
+  const isAdmin = purpose === "admin";
+  const form = document.querySelector(`#${purpose}-password-form`);
+  const target = isAdmin ? adminLoginMessage : loginMessage;
+  const button = document.querySelector(`#${purpose}-login-submit`);
+  if (!supabase) {
+    message(target, "Login ke liye Supabase project configuration zaroori hai.", true);
+    return;
+  }
+  if (!form.reportValidity()) return;
+  const values = formValues(form);
+  const phone = normalizeIndianMobile(values.phone);
+  if (!phone) {
+    message(target, "Sahi 10 digit Indian mobile number daalein.", true);
+    return;
+  }
+
+  button.disabled = true;
+  message(target, "Secure login ho raha hai…");
+  try {
+    const { data, error } = await supabase.functions.invoke("phone-password-login", {
+      body: { phone, password: values.password, purpose },
+    });
+    if (error) {
+      const status = error.context?.status;
+      if (status === 401) throw new Error("Mobile number ya password sahi nahi hai.");
+      if (status === 429) throw new Error("Bahut baar galat password dala gaya. 15 minute baad dobara try karein.");
+      if (status === 404) throw new Error("Login service deploy nahi hai. Supabase Edge Function deploy karein.");
+      throw new Error("Login service available nahi hai. Supabase Edge Function aur database setup check karein.");
+    }
+    if (!data?.session?.access_token || !data?.session?.refresh_token) {
+      throw new Error("Mobile number ya password sahi nahi hai, ya account setup adhura hai.");
+    }
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession(data.session);
+    if (sessionError) throw sessionError;
+    if (!sessionData.user) throw new Error("Login session nahi mili.");
+    form.reset();
+    await enterDashboard(sessionData.user, purpose);
+  } catch (error) {
+    message(target, error.message || "Mobile number ya password sahi nahi hai.", true);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -880,27 +1100,50 @@ app.addEventListener("input", (event) => {
     row.classList.toggle("hidden", !row.dataset.search.includes(query));
   });
 });
-document.querySelector("#student-google-login").addEventListener("click", () => {
-  void startGoogleSignIn("student");
+document.querySelector("#student-password-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void signInWithPhone("student");
 });
-document.querySelector("#admin-google-login").addEventListener("click", () => {
-  void startGoogleSignIn("admin");
+document.querySelector("#student-setup-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitSetup("student");
+});
+document.querySelector("#student-recovery-request-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void requestPasswordSetup("student");
+});
+document.querySelector("#student-recovery-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void saveRecoveredPassword("student");
+});
+document.querySelector("#admin-password-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void signInWithPhone("admin");
+});
+document.querySelector("#admin-setup-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void requestPasswordSetup("admin");
+});
+document.querySelector("#admin-recovery-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void saveRecoveredPassword("admin");
 });
 document.querySelector("#admin-login-button").addEventListener("click", () => {
   showAuth("admin");
 });
-document.querySelector("#register-toggle").addEventListener("click", () => {
-  registrationMode = !registrationMode;
-  document.querySelector("#registration-fields").classList.toggle("hidden", !registrationMode);
-  document.querySelector("#register-toggle").textContent = registrationMode
-    ? "Pehle se account hai? Login karein"
-    : "Naye student? Account banayein";
-  ["name", "phone", "address"].forEach((name) => {
-    document.querySelector(`#student-${name}`).required = registrationMode;
-  });
-});
+document.querySelector("#student-register-button").addEventListener("click", () => openSetup("student", "signup"));
+document.querySelector("#student-existing-button").addEventListener("click", () => openSetup("student", "existing"));
+document.querySelector("#student-confirmation-back").addEventListener("click", () => showAuth("student"));
+document.querySelector("#admin-setup-button").addEventListener("click", () => openSetup("admin", "admin-setup"));
 document.querySelector("#admin-login-back").addEventListener("click", () => showAuth("student"));
 document.querySelector("#back-to-welcome").addEventListener("click", leaveDashboard);
+
+app.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-auth-action]");
+  if (!action) return;
+  const purpose = action.dataset.purpose;
+  if (action.dataset.authAction === "cancel-setup") showAuth(purpose);
+});
 
 pageContent.addEventListener("keydown", (event) => {
   if ((event.key === "Enter" || event.key === " ") && event.target.matches("[data-action='open-note']")) {
@@ -909,99 +1152,38 @@ pageContent.addEventListener("keydown", (event) => {
   }
 });
 
-async function finishOAuthCallback(callbackUrl) {
-  const url = new URL(callbackUrl);
-  const purpose = sessionStorage.getItem("ds-classes.oauth-purpose") === "admin" ? "admin" : "student";
-  sessionStorage.removeItem("ds-classes.oauth-purpose");
-  const target = purpose === "admin" ? adminLoginMessage : loginMessage;
-  const providerError = url.searchParams.get("error_description") || url.searchParams.get("error");
-  if (providerError) {
-    sessionStorage.removeItem("ds-classes.pending-student-profile");
-    document.querySelector(purpose === "admin" ? "#admin-google-login" : "#student-google-login").disabled = false;
-    showAuth(purpose);
-    message(target, providerError, true);
-    return;
-  }
-  const code = url.searchParams.get("code");
-  if (!code) return;
-
-  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) {
-    document.querySelector(purpose === "admin" ? "#admin-google-login" : "#student-google-login").disabled = false;
-    showAuth(purpose);
-    message(target, `Google login complete nahi hua: ${error.message}`, true);
-    return;
-  }
-  try {
-    await enterDashboard(data.session.user, purpose);
-    history.replaceState(null, "", window.location.pathname);
-  } catch (loginError) {
-    document.querySelector(purpose === "admin" ? "#admin-google-login" : "#student-google-login").disabled = false;
-    showAuth(purpose);
-    message(target, loginError.message || "Login complete nahi hua.", true);
-  }
-}
-
-function loadPluginScript(source) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = source;
-    script.onload = resolve;
-    script.onerror = () => reject(new Error(`Native plugin load nahi hua: ${source}`));
-    document.head.append(script);
-  });
-}
-
-function loadNativePlugins() {
-  if (!window.Capacitor?.isNativePlatform?.()) return Promise.resolve();
-  if (!nativePluginsPromise) {
-    nativePluginsPromise = (async () => {
-      await loadPluginScript("capacitor-app.js");
-      await loadPluginScript("capacitor-browser.js");
-    })();
-  }
-  return nativePluginsPromise;
-}
-
 async function start() {
-  const isNative = Boolean(window.Capacitor?.isNativePlatform?.());
-  if (isNative) await loadNativePlugins();
-  const appPlugin = window.Capacitor?.Plugins?.App;
-  if (isNative && appPlugin) {
-    await appPlugin.addListener("appUrlOpen", async ({ url }) => {
-      try {
-        try {
-          await window.Capacitor.Plugins.Browser?.close();
-        } catch (error) {
-          console.warn("OAuth browser close failed:", error);
-        }
-        await finishOAuthCallback(url);
-      } catch (error) {
-        showAuth(authPurpose);
-        message(authPurpose === "admin" ? adminLoginMessage : loginMessage, error.message || "Google callback handle nahi hua.", true);
-      }
-    });
-  }
   if (!backendConfigured) return;
-  const callbackPurpose = sessionStorage.getItem("ds-classes.oauth-purpose") === "admin" ? "admin" : "student";
-  if (callbackPurpose === "admin") showAuth("admin");
+  if (await registerNativeAuthLinks()) return;
   const { data, error } = await supabase.auth.getSession();
   if (error) {
-    message(callbackPurpose === "admin" ? adminLoginMessage : loginMessage, `Supabase session check fail hua: ${error.message}`, true);
+    message(loginMessage, `Supabase session check fail hua: ${error.message}`, true);
     return;
   }
   if (data.session) {
-    try {
-      await enterDashboard(data.session.user, callbackPurpose);
-      if (sessionStorage.getItem("ds-classes.oauth-purpose")) {
-        sessionStorage.removeItem("ds-classes.oauth-purpose");
-        history.replaceState(null, "", window.location.pathname);
-      }
-    } catch (profileError) {
-      sessionStorage.removeItem("ds-classes.oauth-purpose");
-      showAuth(callbackPurpose === "admin" ? "admin" : "student");
-      message(callbackPurpose === "admin" ? adminLoginMessage : loginMessage, profileError.message || "Profile load nahi hua.", true);
+    const requestedSetup = new URLSearchParams(window.location.search).get("password-setup");
+    if (requestedSetup === "student" || requestedSetup === "admin") {
+      showPasswordSetup(data.session.user, requestedSetup);
+      return;
     }
+    const purpose = data.session.user.app_metadata?.role === "admin" ? "admin" : "student";
+    try {
+      await enterDashboard(data.session.user, purpose);
+    } catch (profileError) {
+      showAuth(purpose);
+      message(purpose === "admin" ? adminLoginMessage : loginMessage, profileError.message || "Profile load nahi hua.", true);
+    }
+  } else if (new URLSearchParams(window.location.search).has("password-setup")) {
+    const purpose = new URLSearchParams(window.location.search).get("password-setup") === "admin" ? "admin" : "student";
+    showAuth(purpose);
+    message(
+      purpose === "admin" ? adminLoginMessage : loginMessage,
+      "Password setup link invalid ya expire ho gaya. Naya link mangayein.",
+      true,
+    );
+  } else if (new URLSearchParams(window.location.search).has("email-confirmed")) {
+    showAuth("student");
+    message(loginMessage, "Gmail confirmation complete. Ab mobile number aur password se login karein.");
   }
 }
 

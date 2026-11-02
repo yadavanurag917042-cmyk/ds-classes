@@ -1,0 +1,5 @@
+[functions.send-email]
+verify_jwt = false
+
+[functions.phone-password-login]
+verify_jwt = false
